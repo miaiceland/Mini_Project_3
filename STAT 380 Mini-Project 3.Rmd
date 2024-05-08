@@ -1,0 +1,251 @@
+---
+title: "Mini Project 3"
+author: "Claire Burcik, Hannah Park, and Mia Iceland"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Front Matter
+```{r}
+remove(list = ls())
+library(tidyverse)
+library(readxl)
+library(rpart)
+library(rattle)
+library(glmnet)
+
+COD <- read_excel("CODGames2_mp.xlsx")
+
+```
+
+## Task 1
+```{r}
+COD2<-
+  COD%>%
+  filter(FullPartial == "Full")
+
+#Boxplot
+ggplot(data= COD2, mapping = aes(x = TotalXP, y = XPType))+
+  geom_boxplot(color = "black", fill = "cyan")+
+  labs(x = "Total XP",
+       y = "XP Type")
+
+#Summary Statistics
+COD2%>%
+  group_by(XPType)%>%
+  summarize(min_XP = min(TotalXP),
+            med_XP = median(TotalXP),
+            mean_XP = mean(TotalXP),
+            max_XP = max(TotalXP),
+            std_XP = sd(TotalXP))
+```
+
+Both the summary statistics and box plots reveal that there appears to be an association between earning Double XP + 10% and having a higher Total XP score than when you are earning just a 10% Boost. The box plot shows that both the 1st quartile, median, and 3rd quartile Total XP values are greater for Double XP + 10% compared to the 10% boost. The summary statistics also reveal that the minimum total XP value for Double XP + 10% is larger than 10% boost (8772 for Double XP + 10% and 3795 for 10%), and the same applies for the mean, max, and standard deviation (17242.17 mean, 43816 max, and 6648.590 standard deviation vs 9094.45 mean, 16831 max, and 2605.953 standard deviation).
+
+## Task 2
+```{r}
+#Convert Result to indicator named Outcome (Yes = 1, No = 0) 
+COD <-
+  COD %>%
+  #Split string into two
+  mutate (Result2 = strsplit(Result, "-"))%>%
+  mutate(Outcome = rep(NA, nrow(COD)))
+
+outcome_lst <- rep(NA, nrow(COD))
+for(i in 1:nrow(COD)) {
+  #if player won
+  if (as.numeric(COD$Result2[[i]][1]) > as.numeric(COD$Result2[[i]][2])) {
+    outcome_lst[i] <- 1
+  } 
+  #if player lost
+    else {
+    outcome_lst[i] <- 0
+  }
+}
+
+COD<-
+  COD%>%
+  mutate(Outcome = outcome_lst)
+```
+
+### Part A
+
+#### Lasso Model
+```{r}
+COD3 <- 
+  COD %>%
+  filter(GameType == "HC - TDM")
+
+#Create input matrix and response vector
+Xmat <- model.matrix(Score ~ TotalXP + Eliminations + Deaths + Damage + XPType + Outcome, data = COD3)[ , -1]
+yvec <- COD3$Score
+
+#Fit the LASSO model (let R choose lambda sequence)
+lassoModel <- glmnet(x = Xmat, 
+                     y = yvec,
+                     family = "gaussian",
+                     alpha = 1,
+                     lambda = NULL,
+                     standardize = TRUE)
+
+plot(lassoModel, xvar = "lambda", label = TRUE)
+
+#Use 10-fold CV to pick lambda for LASSO (use seed 123)
+set.seed(123)
+lassoCV <- cv.glmnet(x = Xmat,
+                     y = yvec,
+                     family = "gaussian",
+                     alpha = 1,
+                     lambda = NULL,
+                     standardize = TRUE,
+                     nfolds = 10)
+set.seed(NULL)
+
+plot(lassoCV)
+
+#Display the optimal values of lambda
+lassoCV$lambda.min
+lassoCV$lambda.1se
+
+#Store the coefficients associated with the optimal values
+coefLamMin <- predict(lassoCV, s = lassoCV$lambda.min, type = "coefficients")
+coefLam1se <- predict(lassoCV, s = lassoCV$lambda.1se, type = "coefficients")
+
+#Create a data frame for comparing the coefficients
+tempdf <- 
+  data.frame(Variable = row.names(coefLamMin), 
+             lamMin = as.numeric(coefLamMin), 
+             lam1se = as.numeric(coefLam1se))
+
+tempdf
+
+#Finding RMSE
+lassoYhat <- predict(lassoCV, s = lassoCV$lambda.min,
+                     newx = Xmat)
+lassoMSE <- mean((yvec - lassoYhat)^2)
+lassoRMSE <- sqrt(lassoMSE)
+
+#Display LASSO RMSE
+lassoRMSE
+```
+
+#### Ridge Model
+```{r}
+#Fit the Ridge model (let R choose lambda sequence)
+ridgeModel <- glmnet(x = Xmat, 
+                     y = yvec,
+                     family = "gaussian",
+                     alpha = 0,
+                     lambda = NULL,
+                     standardize = TRUE)
+
+plot(ridgeModel, xvar = "lambda", label = TRUE)
+
+set.seed(123)
+ridgeCV <- cv.glmnet(x = Xmat,
+                     y = yvec,
+                     family = "gaussian",
+                     alpha = 0,
+                     lambda = NULL,
+                     standardize = TRUE,
+                     nfolds = 10)
+set.seed(NULL)
+
+plot(ridgeCV)
+
+#Display the optimal values of lambda
+ridgeCV$lambda.min
+ridgeCV$lambda.1se
+
+#Store the coefficients associated with the optimal values
+coefLamMin <- predict(ridgeCV, s = ridgeCV$lambda.min, type = "coefficients")
+coefLam1se <- predict(ridgeCV, s = ridgeCV$lambda.1se, type = "coefficients")
+
+#Create a data frame for comparing the coefficients
+tempdf <- 
+  data.frame(Variable = row.names(coefLamMin), 
+             lamMin = as.numeric(coefLamMin), 
+             lam1se = as.numeric(coefLam1se))
+
+tempdf
+
+ridgeYhat <- predict(ridgeCV, s = ridgeCV$lambda.min,
+                     newx = Xmat)
+ridgeMSE <- mean((yvec - ridgeYhat)^2)
+ridgeRMSE <- sqrt(ridgeMSE)
+ridgeRMSE
+```
+
+My choice in which tuning parameter, lambda, to use can made from finding the minimum lambda values. We want to find the lowest lambda values because as lambda gets bigger, the model is susceptible to bigger penalties from the Betas. Using 10-fold cross validation, I was able to extract the minimum lambda values. It is standard practice to use the 1 Standard Error Rule: find the coefficients of the model for both the minimum lambda value and 1 standard error from minimum lambda value. In the LASSO regression example, the minimum and 1 SE lambda values are 9.983057 and 162.699. In the Ridge regression example, the minimum and 1 SE lambda values are 125.9719 and 888.7068.
+
+Looking at the model, LASSO regression has shrunk down values such as Damage, XP Type, and Outcome which means that these variables do not have a big impact on predicting Score. However, variables such as Eliminations and Deaths have a stronger impact on predicting score because their coefficients do not shrink to zero and are large values for both the minimum lambda value and 1 SE lambda value. 
+
+When assessing the coefficients of model using Ridge regression, it is similar to the analysis of LASSO regression with the key difference being the coefficients of the variables never shrink to zero (however they do get close). In the Ridge regression model, variables such as XP Type, Outcome, Eliminations, and Deaths have a greater impact on predicting Score while variables such as TotalXP and Damage have minimal impact on predicting Score.
+
+The estimated equation for the LASSO regression model:
+
+$$\hat{y}_{Score}=657.704 + 0.052x_{TotalXP} + 158.765x_{Eliminations} - 62.390x_{Deaths} + 1.316x_{Damage} - 290.511x_{XPType} - 409.865x_{Outcome}$$
+
+The estimated equation for the Ridge regression model:
+
+$$\hat{y}_{Score} = 708.533 + 0.052x_{TotalXP} + 99.987x_{Eliminations} - 59.683x_{Deaths} + 3.165x_{Damage} - 280.134x_{XPType} - 369.723x_{Outcome}$$
+
+Overall, the main way I would compare the results of estimated equation of LASSO versus Ridge would be by looking at each model's RMSE values. In the LASSO regression model, the RMSE value is 691.2083 while the Ridge regression model is 695.0084. RMSE is root mean standard error which finds the average error between the model and the actual data. Therefore, the lower the RMSE value the better. Since LASSO regression model has a lower RMSE value, it is a better model than the Ridge regression model.
+
+### Part B
+```{r}
+reg_tree <- rpart(Score~TotalXP + Eliminations + Deaths + Damage + XPType + Outcome, method = "anova", data = COD, minbucket = 15)
+
+fancyRpartPlot(reg_tree, cex = 0.6)
+
+#Variable importance (scaled)
+reg_tree$variable.importance/sum(reg_tree$variable.importance)
+```
+
+The variables associated with the 3 highest variable importance values are Damage with .42, Eliminations with .41, and TotalXP with .12.
+
+### Part C
+How does this compare to the most important variables based on the regression tree?
+
+```{r}
+
+COD4 <- 
+  COD 
+
+dat <- COD4[,c("TotalXP", "Eliminations", "Deaths","Damage", "Outcome", "Score")]
+
+standardized_inputs <- scale(dat)
+
+regression_model <- lm(Score ~ ., data = as.data.frame(standardized_inputs))
+
+summary(regression_model)
+
+coeff <- coef(regression_model)
+abs_coefficients <- abs(coeff)
+top_variables <- names(sort(abs_coefficients, decreasing = TRUE)[1:3])
+
+top_variables
+```
+Estimated equation: 
+
+$$\hat{y}_{Score} = 1.359e-16 + 0.1656e-1x_{TotalXP} + 0.458e-1x_{Eliminations} - 0.2011e-1x_{Deaths} + 0.3291e-1x_{Damage} - 0.1027e-1x_{Outcome}$$
+
+The top three variables are Eliminations, Damage, and Deaths. Compared to the regression tree, both have Eliminations and Damage in the top 3 variables. The regression tree has TotalXP in the top 3 compared to the regression model which includes Deaths instead.
+
+
+## Group Contributions
+
+### Claire Burcik
+- Task 1
+- Task 2 Part B
+
+### Hannah Park 
+- Task 2 Part C
+
+### Mia Iceland
+- Task 2 Part A
+
